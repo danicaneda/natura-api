@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: natura-api
+    runtime: python
+    buildCommand: pip install -r requirements-api.txt
+    startCommand: uvicorn api_server:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: FRONTEND_ORIGIN
+        value: https://natura-web.vercel.app
+      - key: BBDD_SECRET
+        generateValue: true
+      - key: APP_ENV
+        value: production
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: PYTHON_VERSION
+        value: 3.11.0
