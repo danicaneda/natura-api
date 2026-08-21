@@ -174,22 +174,62 @@ if not _existing_users:
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
 
-# Cache TTL bajo: 60s en lecturas, se invalida manualmente tras writes con
-# get_productos.clear() (o análogas) desde los handlers de create/update/delete.
+# Todas las lecturas y escrituras van al backend por HTTP.
+# Así el panel gestiona la BD del entorno definido por BACKEND_URL:
+#   - localhost → BD local (dev).
+#   - natura-api.onrender.com → BD de producción (visible en la web).
+# Antes escribíamos directamente a SQLite local, lo que causaba que los
+# productos añadidos desde el panel jamás llegaran a la web pública.
+
+_AUTH_HEADERS = {"Authorization": f"Bearer {BBDD_SECRET}", "Content-Type": "application/json"}
+_HTTP_TIMEOUT = 20  # generoso para cold-start de Render free tier
+
+def _api_get(path: str, params: dict | None = None, admin: bool = False, timeout: int = _HTTP_TIMEOUT):
+    headers = _AUTH_HEADERS if admin else None
+    return requests.get(f"{BACKEND_URL}{path}", params=params, headers=headers, timeout=timeout)
+
+def _api_post(path: str, data: dict, timeout: int = _HTTP_TIMEOUT):
+    return requests.post(f"{BACKEND_URL}{path}", json=data, headers=_AUTH_HEADERS, timeout=timeout)
+
+def _api_put(path: str, data: dict, timeout: int = _HTTP_TIMEOUT):
+    return requests.put(f"{BACKEND_URL}{path}", json=data, headers=_AUTH_HEADERS, timeout=timeout)
+
+def _api_delete(path: str, timeout: int = _HTTP_TIMEOUT):
+    return requests.delete(f"{BACKEND_URL}{path}", headers=_AUTH_HEADERS, timeout=timeout)
+
 @st.cache_data(ttl=60, show_spinner=False)
 def get_productos() -> pd.DataFrame:
-    with sqlite3.connect(PRODUCTOS_DB) as conn:
-        return pd.read_sql_query("SELECT * FROM productos ORDER BY created_at DESC", conn)
+    """Lista todos los productos (incluidos no-disponibles) vía admin API."""
+    try:
+        r = _api_get("/api/admin/productos", admin=True)
+        if not r.ok:
+            return pd.DataFrame()
+        return pd.DataFrame(r.json())
+    except Exception as e:
+        st.error(f"⚠️ Backend no responde: {e}")
+        return pd.DataFrame()
 
 @st.cache_data(ttl=60, show_spinner=False)
 def get_gallery() -> pd.DataFrame:
-    with sqlite3.connect(GALLERY_DB) as conn:
-        return pd.read_sql_query("SELECT * FROM gallery_images ORDER BY created_at DESC", conn)
+    try:
+        r = _api_get("/api/admin/gallery", admin=True)
+        if not r.ok:
+            return pd.DataFrame()
+        return pd.DataFrame(r.json())
+    except Exception as e:
+        st.error(f"⚠️ Backend no responde: {e}")
+        return pd.DataFrame()
 
 @st.cache_data(ttl=60, show_spinner=False)
 def get_equipo() -> pd.DataFrame:
-    with sqlite3.connect(EQUIPO_DB) as conn:
-        return pd.read_sql_query("SELECT * FROM equipo ORDER BY orden ASC, created_at ASC", conn)
+    try:
+        r = _api_get("/api/admin/equipo", admin=True)
+        if not r.ok:
+            return pd.DataFrame()
+        return pd.DataFrame(r.json())
+    except Exception as e:
+        st.error(f"⚠️ Backend no responde: {e}")
+        return pd.DataFrame()
 
 def _invalidate_data_caches():
     """Llamar tras cualquier write: invalida los caches de lectura."""
@@ -407,16 +447,25 @@ def render_productos():
                         imagen_url = save_image(n_imagen, MEDIA_PRODUCTOS, prefix=n_nombre.replace(" ", "_").lower())
                     etiquetas = json.dumps([e.strip() for e in n_etiquetas.split(",") if e.strip()])
                     now = datetime.now().isoformat()
-                    with sqlite3.connect(PRODUCTOS_DB) as conn:
-                        conn.execute(
-                            "INSERT INTO productos (nombre,categoria,descripcion,precio,precio_oferta,disponible,destacado,imagen_url,etiquetas,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                            (n_nombre.strip(), n_cat, n_desc.strip() or None, n_precio or None,
-                             n_precio_oferta or None, int(n_disponible), int(n_destacado),
-                             imagen_url, etiquetas, now, now)
-                        )
-                    _invalidate_data_caches()
-                    st.toast(f"✅ Producto '{n_nombre}' añadido", icon="🌿")
-                    st.rerun()
+                    payload = {
+                        "nombre": n_nombre.strip(),
+                        "categoria": n_cat,
+                        "descripcion": n_desc.strip() or None,
+                        "precio": n_precio or None,
+                        "precio_oferta": n_precio_oferta or None,
+                        "disponible": bool(n_disponible),
+                        "destacado": bool(n_destacado),
+                        "imagen_url": imagen_url,
+                        "etiquetas": [e.strip() for e in n_etiquetas.split(",") if e.strip()],
+                    }
+                    with st.spinner("Guardando en el servidor..."):
+                        r = _api_post("/api/admin/productos", payload)
+                    if r.ok:
+                        _invalidate_data_caches()
+                        st.toast(f"✅ Producto '{n_nombre}' añadido", icon="🌿")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ Error {r.status_code}: {r.text[:200]}")
 
     with tab_editar:
         df = get_productos()
@@ -460,16 +509,25 @@ def render_productos():
                 imagen_url = prod["imagen_url"]
                 if e_imagen:
                     imagen_url = save_image(e_imagen, MEDIA_PRODUCTOS, prefix=e_nombre.replace(" ", "_").lower())
-                etiquetas = json.dumps([e.strip() for e in e_etiquetas.split(",") if e.strip()])
-                with sqlite3.connect(PRODUCTOS_DB) as conn:
-                    conn.execute(
-                        "UPDATE productos SET nombre=?,categoria=?,descripcion=?,precio=?,precio_oferta=?,disponible=?,destacado=?,imagen_url=?,etiquetas=?,updated_at=? WHERE id=?",
-                        (e_nombre, e_cat, e_desc or None, e_precio or None, e_precio_oferta or None,
-                         int(e_disponible), int(e_destacado), imagen_url, etiquetas, datetime.now().isoformat(), prod_id)
-                    )
-                _invalidate_data_caches()
-                st.toast("✅ Producto actualizado", icon="✏️")
-                st.rerun()
+                payload = {
+                    "nombre": e_nombre,
+                    "categoria": e_cat,
+                    "descripcion": e_desc or None,
+                    "precio": e_precio or None,
+                    "precio_oferta": e_precio_oferta or None,
+                    "disponible": bool(e_disponible),
+                    "destacado": bool(e_destacado),
+                    "imagen_url": imagen_url,
+                    "etiquetas": [e.strip() for e in e_etiquetas.split(",") if e.strip()],
+                }
+                with st.spinner("Actualizando..."):
+                    r = _api_put(f"/api/admin/productos/{prod_id}", payload)
+                if r.ok:
+                    _invalidate_data_caches()
+                    st.toast("✅ Producto actualizado", icon="✏️")
+                    st.rerun()
+                else:
+                    st.error(f"❌ Error {r.status_code}: {r.text[:200]}")
 
             if del_btn:
                 confirm_prod_key = f"confirm_del_prod_{prod_id}"
@@ -493,35 +551,35 @@ def render_productos():
 
 # ── HELPERS EXTRA ─────────────────────────────────────────────────────────────
 
-def toggle_gallery_status(img_id: int, current_status: str):
+def toggle_gallery_status(img_id: int, current_status: str) -> bool:
     new_status = "oculto" if current_status == "publicado" else "publicado"
-    with sqlite3.connect(GALLERY_DB) as conn:
-        conn.execute("UPDATE gallery_images SET status=? WHERE id=?", (new_status, img_id))
-    _invalidate_data_caches()
+    try:
+        r = _api_put(f"/api/admin/gallery/{img_id}", {"status": new_status})
+        _invalidate_data_caches()
+        return r.ok
+    except Exception as e:
+        st.error(f"❌ {e}")
+        return False
 
-def delete_gallery_image(img_id: int, imagen_url: str):
-    # Borrar archivo físico si existe
-    img_path = imagen_url.lstrip("/")
-    if os.path.exists(img_path):
-        try:
-            os.remove(img_path)
-        except Exception:
-            pass
-    with sqlite3.connect(GALLERY_DB) as conn:
-        conn.execute("DELETE FROM gallery_images WHERE id=?", (img_id,))
-    _invalidate_data_caches()
+def delete_gallery_image(img_id: int, imagen_url: str = "") -> bool:
+    # Nota: la imagen queda en Cloudinary. Streamlit no tiene sesión Cloudinary
+    # dedicada aquí — el user puede purgar orphans desde el dashboard Cloudinary.
+    try:
+        r = _api_delete(f"/api/admin/gallery/{img_id}")
+        _invalidate_data_caches()
+        return r.ok
+    except Exception as e:
+        st.error(f"❌ {e}")
+        return False
 
-def delete_producto(prod_id: int, imagen_url: str):
-    if imagen_url:
-        img_path = imagen_url.lstrip("/")
-        if os.path.exists(img_path):
-            try:
-                os.remove(img_path)
-            except Exception:
-                pass
-    with sqlite3.connect(PRODUCTOS_DB) as conn:
-        conn.execute("DELETE FROM productos WHERE id=?", (prod_id,))
-    _invalidate_data_caches()
+def delete_producto(prod_id: int, imagen_url: str = "") -> bool:
+    try:
+        r = _api_delete(f"/api/admin/productos/{prod_id}")
+        _invalidate_data_caches()
+        return r.ok
+    except Exception as e:
+        st.error(f"❌ {e}")
+        return False
 
 # ── GESTIÓN GALERÍA ───────────────────────────────────────────────────────────
 
@@ -636,18 +694,26 @@ def render_galeria():
                 if not g_files:
                     st.error("Selecciona al menos una imagen antes de subir.")
                 else:
-                    subidas = 0
+                    subidas, fallidas = 0, 0
                     with st.spinner(f"Subiendo {len(g_files)} imagen(es)..."):
-                        with sqlite3.connect(GALLERY_DB) as conn:
-                            for f in g_files:
-                                url = save_image(f, MEDIA_GALLERY, prefix="gallery")
-                                conn.execute(
-                                    "INSERT INTO gallery_images (titulo,imagen_url,categoria,status,created_at) VALUES (?,?,?,?,?)",
-                                    (g_titulo or None, url, g_categoria, g_status, datetime.now().isoformat())
-                                )
+                        for f in g_files:
+                            url = save_image(f, MEDIA_GALLERY, prefix="gallery")
+                            payload = {
+                                "titulo": g_titulo or None,
+                                "imagen_url": url,
+                                "categoria": g_categoria,
+                                "status": g_status,
+                            }
+                            r = _api_post("/api/admin/gallery", payload)
+                            if r.ok:
                                 subidas += 1
+                            else:
+                                fallidas += 1
                     _invalidate_data_caches()
-                    st.toast(f"✅ {subidas} imagen(es) subida(s)", icon="🖼️")
+                    if subidas:
+                        st.toast(f"✅ {subidas} imagen(es) subida(s)", icon="🖼️")
+                    if fallidas:
+                        st.error(f"❌ {fallidas} fallaron al guardarse en el servidor.")
                     st.rerun()
 
 # ── GESTIÓN EQUIPO ─────────────────────────────────────────────────────────────────────────────────
@@ -683,10 +749,12 @@ def render_equipo():
                         if st.button("🔴 Ocultar" if row.get("status") == "publicado" else "🟢 Publicar",
                                      key=f"eq_toggle_{row['id']}"):
                             new_status = "oculto" if row.get("status") == "publicado" else "publicado"
-                            with sqlite3.connect(EQUIPO_DB) as conn:
-                                conn.execute("UPDATE equipo SET status=? WHERE id=?", (new_status, row["id"]))
-                            _invalidate_data_caches()
-                            st.rerun()
+                            r = _api_put(f"/api/admin/equipo/{row['id']}", {"status": new_status})
+                            if r.ok:
+                                _invalidate_data_caches()
+                                st.rerun()
+                            else:
+                                st.error(f"❌ Error {r.status_code}: {r.text[:200]}")
                     st.divider()
 
     with tab_nuevo:
@@ -711,15 +779,21 @@ def render_equipo():
                 else:
                     with st.spinner("Subiendo foto..."):
                         url = save_image(eq_img, MEDIA_EQUIPO, prefix=eq_nombre.strip().replace(" ", "_")[:20].lower())
-                        with sqlite3.connect(EQUIPO_DB) as conn:
-                            conn.execute(
-                                "INSERT INTO equipo (nombre,rol,descripcion,imagen_url,orden,status,created_at) VALUES (?,?,?,?,?,?,?)",
-                                (eq_nombre.strip(), eq_rol.strip() or None, eq_desc.strip() or None,
-                                 url, int(eq_orden), eq_status, datetime.now().isoformat())
-                            )
-                    _invalidate_data_caches()
-                    st.toast(f"✅ Foto '{eq_nombre}' añadida", icon="👥")
-                    st.rerun()
+                        payload = {
+                            "nombre": eq_nombre.strip(),
+                            "rol": eq_rol.strip() or None,
+                            "descripcion": eq_desc.strip() or None,
+                            "imagen_url": url,
+                            "orden": int(eq_orden),
+                            "status": eq_status,
+                        }
+                        r = _api_post("/api/admin/equipo", payload)
+                    if r.ok:
+                        _invalidate_data_caches()
+                        st.toast(f"✅ Foto '{eq_nombre}' añadida", icon="👥")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ Error {r.status_code}: {r.text[:200]}")
 
     with tab_editar:
         df = get_equipo()
@@ -753,22 +827,30 @@ def render_equipo():
                             with st.spinner("Subiendo nueva foto..."):
                                 new_url = save_image(e_img, MEDIA_EQUIPO,
                                                      prefix=e_nombre.strip().replace(" ", "_")[:20].lower())
-                        with sqlite3.connect(EQUIPO_DB) as conn:
-                            conn.execute(
-                                "UPDATE equipo SET nombre=?,rol=?,descripcion=?,imagen_url=?,orden=?,status=? WHERE id=?",
-                                (e_nombre.strip(), e_rol.strip() or None, e_desc.strip() or None,
-                                 new_url, int(e_orden), e_status, sel_id)
-                            )
-                        _invalidate_data_caches()
-                        st.toast("✅ Actualizado", icon="✏️")
-                        st.rerun()
+                        payload = {
+                            "nombre": e_nombre.strip(),
+                            "rol": e_rol.strip() or None,
+                            "descripcion": e_desc.strip() or None,
+                            "imagen_url": new_url,
+                            "orden": int(e_orden),
+                            "status": e_status,
+                        }
+                        r = _api_put(f"/api/admin/equipo/{sel_id}", payload)
+                        if r.ok:
+                            _invalidate_data_caches()
+                            st.toast("✅ Actualizado", icon="✏️")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ Error {r.status_code}: {r.text[:200]}")
                 with col_del:
                     if st.form_submit_button("🗑️ Eliminar", use_container_width=True):
-                        with sqlite3.connect(EQUIPO_DB) as conn:
-                            conn.execute("DELETE FROM equipo WHERE id=?", (sel_id,))
-                        _invalidate_data_caches()
-                        st.toast("✅ Eliminado", icon="🗑️")
-                        st.rerun()
+                        r = _api_delete(f"/api/admin/equipo/{sel_id}")
+                        if r.ok:
+                            _invalidate_data_caches()
+                            st.toast("✅ Eliminado", icon="🗑️")
+                            st.rerun()
+                        else:
+                            st.error(f"❌ Error {r.status_code}: {r.text[:200]}")
 
 # ── ADMINISTRACIÓN AVANZADA ──────────────────────────────────────────────────
 

@@ -750,6 +750,97 @@ async def admin_delete_gallery(img_id: int):
         logger.error(f"Admin: error eliminando imagen {img_id}: {e}")
         raise HTTPException(status_code=500, detail="Error interno")
 
+# ── ADMIN: EQUIPO ─────────────────────────────────────────────────────────────
+
+class AdminEquipoCreate(BaseModel):
+    nombre: str = Field(..., min_length=1, max_length=120)
+    rol: Optional[str] = Field(default=None, max_length=120)
+    descripcion: Optional[str] = Field(default=None, max_length=1500)
+    imagen_url: str = Field(..., min_length=1, max_length=1000)
+    orden: int = Field(default=0, ge=0, le=9999)
+    status: str = Field(default="publicado", pattern="^(publicado|oculto)$")
+
+class AdminEquipoUpdate(BaseModel):
+    nombre: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    rol: Optional[str] = Field(default=None, max_length=120)
+    descripcion: Optional[str] = Field(default=None, max_length=1500)
+    imagen_url: Optional[str] = Field(default=None, max_length=1000)
+    orden: Optional[int] = Field(default=None, ge=0, le=9999)
+    status: Optional[str] = Field(default=None, pattern="^(publicado|oculto)$")
+
+@app.get("/api/admin/equipo", dependencies=[Depends(_require_admin)])
+async def admin_list_equipo():
+    try:
+        with sqlite3.connect(EQUIPO_DB) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute("SELECT * FROM equipo ORDER BY orden ASC, created_at ASC").fetchall()
+        return [{"id": r["id"], "nombre": r["nombre"], "rol": r["rol"],
+                 "descripcion": r["descripcion"], "imagen_url": r["imagen_url"],
+                 "orden": r["orden"], "status": r["status"]} for r in rows]
+    except Exception as e:
+        logger.error(f"Admin: error listando equipo: {e}")
+        raise HTTPException(status_code=500, detail="Error interno")
+
+@app.post("/api/admin/equipo", dependencies=[Depends(_require_admin)], status_code=201)
+async def admin_create_equipo(data: AdminEquipoCreate):
+    try:
+        now = datetime.now().isoformat()
+        with sqlite3.connect(EQUIPO_DB) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.execute(
+                "INSERT INTO equipo (nombre,rol,descripcion,imagen_url,orden,status,created_at) VALUES (?,?,?,?,?,?,?)",
+                (data.nombre, data.rol, data.descripcion, data.imagen_url, data.orden, data.status, now)
+            )
+            new_id = cur.lastrowid
+            row = conn.execute("SELECT * FROM equipo WHERE id=?", (new_id,)).fetchone()
+        return {"id": row["id"], "nombre": row["nombre"], "rol": row["rol"],
+                "descripcion": row["descripcion"], "imagen_url": row["imagen_url"],
+                "orden": row["orden"], "status": row["status"]}
+    except Exception as e:
+        logger.error(f"Admin: error creando miembro equipo: {e}")
+        raise HTTPException(status_code=500, detail="Error interno")
+
+@app.put("/api/admin/equipo/{eq_id}", dependencies=[Depends(_require_admin)])
+async def admin_update_equipo(eq_id: int, data: AdminEquipoUpdate):
+    try:
+        with sqlite3.connect(EQUIPO_DB) as conn:
+            conn.row_factory = sqlite3.Row
+            if not conn.execute("SELECT id FROM equipo WHERE id=?", (eq_id,)).fetchone():
+                raise HTTPException(status_code=404, detail="Miembro no encontrado")
+            fields, params = [], []
+            if data.nombre      is not None: fields.append("nombre=?");      params.append(data.nombre)
+            if data.rol         is not None: fields.append("rol=?");         params.append(data.rol)
+            if data.descripcion is not None: fields.append("descripcion=?"); params.append(data.descripcion)
+            if data.imagen_url  is not None: fields.append("imagen_url=?");  params.append(data.imagen_url)
+            if data.orden       is not None: fields.append("orden=?");       params.append(data.orden)
+            if data.status      is not None: fields.append("status=?");      params.append(data.status)
+            if fields:
+                params.append(eq_id)
+                conn.execute(f"UPDATE equipo SET {', '.join(fields)} WHERE id=?", params)
+            row = conn.execute("SELECT * FROM equipo WHERE id=?", (eq_id,)).fetchone()
+        return {"id": row["id"], "nombre": row["nombre"], "rol": row["rol"],
+                "descripcion": row["descripcion"], "imagen_url": row["imagen_url"],
+                "orden": row["orden"], "status": row["status"]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Admin: error actualizando miembro {eq_id}: {e}")
+        raise HTTPException(status_code=500, detail="Error interno")
+
+@app.delete("/api/admin/equipo/{eq_id}", dependencies=[Depends(_require_admin)])
+async def admin_delete_equipo(eq_id: int):
+    try:
+        with sqlite3.connect(EQUIPO_DB) as conn:
+            result = conn.execute("DELETE FROM equipo WHERE id=?", (eq_id,))
+        if result.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Miembro no encontrado")
+        return {"success": True, "deleted_id": eq_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Admin: error eliminando miembro {eq_id}: {e}")
+        raise HTTPException(status_code=500, detail="Error interno")
+
 # ── ADMIN: TESTIMONIOS ────────────────────────────────────────────────────────
 
 class AdminTestimonioCreate(BaseModel):
