@@ -597,21 +597,20 @@ async def admin_list_productos():
 async def admin_create_producto(data: AdminProductoCreate):
     try:
         now = datetime.now().isoformat()
-        conn = sqlite3.connect(PRODUCTOS_DB)
-        cur = conn.execute(
-            "INSERT INTO productos (nombre,categoria,descripcion,precio,precio_oferta,disponible,destacado,imagen_url,etiquetas,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (data.nombre, data.categoria, data.descripcion, data.precio, data.precio_oferta,
-             1 if data.disponible else 0, 1 if data.destacado else 0,
-             data.imagen_url, json.dumps(data.etiquetas), now, now)
-        )
-        new_id = cur.lastrowid
-        conn.commit()
-        row = conn.execute("SELECT * FROM productos WHERE id=?", (new_id,)).fetchone()
-        conn.close()
+        with sqlite3.connect(PRODUCTOS_DB) as conn:
+            conn.row_factory = sqlite3.Row  # _row_to_producto necesita Row
+            cur = conn.execute(
+                "INSERT INTO productos (nombre,categoria,descripcion,precio,precio_oferta,disponible,destacado,imagen_url,etiquetas,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (data.nombre, data.categoria, data.descripcion, data.precio, data.precio_oferta,
+                 1 if data.disponible else 0, 1 if data.destacado else 0,
+                 data.imagen_url, json.dumps(data.etiquetas), now, now)
+            )
+            new_id = cur.lastrowid
+            row = conn.execute("SELECT * FROM productos WHERE id=?", (new_id,)).fetchone()
         return _row_to_producto(row)
     except Exception as e:
-        logger.error(f"Admin: error creando producto: {e}")
-        raise HTTPException(status_code=500, detail="Error interno")
+        logger.exception(f"Admin: error creando producto: {e}")
+        raise HTTPException(status_code=500, detail=f"Error creando producto: {type(e).__name__}: {e}")
 
 @app.put("/api/admin/productos/{producto_id}", dependencies=[Depends(_require_admin)])
 async def admin_update_producto(producto_id: int, data: AdminProductoUpdate):
@@ -692,20 +691,19 @@ async def admin_list_gallery():
 async def admin_create_gallery(data: AdminGalleryCreate):
     try:
         now = datetime.now().isoformat()
-        conn = sqlite3.connect(GALLERY_DB)
-        cur = conn.execute(
-            "INSERT INTO gallery_images (titulo,imagen_url,categoria,status,created_at) VALUES (?,?,?,?,?)",
-            (data.titulo, data.imagen_url, data.categoria, data.status, now)
-        )
-        new_id = cur.lastrowid
-        conn.commit()
-        row = conn.execute("SELECT * FROM gallery_images WHERE id=?", (new_id,)).fetchone()
-        conn.close()
+        with sqlite3.connect(GALLERY_DB) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.execute(
+                "INSERT INTO gallery_images (titulo,imagen_url,categoria,status,created_at) VALUES (?,?,?,?,?)",
+                (data.titulo, data.imagen_url, data.categoria, data.status, now)
+            )
+            new_id = cur.lastrowid
+            row = conn.execute("SELECT * FROM gallery_images WHERE id=?", (new_id,)).fetchone()
         return {"id": row["id"], "titulo": row["titulo"], "imagen_url": row["imagen_url"],
                 "categoria": row["categoria"], "status": row["status"]}
     except Exception as e:
-        logger.error(f"Admin: error añadiendo a galería: {e}")
-        raise HTTPException(status_code=500, detail="Error interno")
+        logger.exception(f"Admin: error añadiendo a galería: {e}")
+        raise HTTPException(status_code=500, detail=f"Error creando imagen: {type(e).__name__}: {e}")
 
 @app.put("/api/admin/gallery/{img_id}", dependencies=[Depends(_require_admin)])
 async def admin_update_gallery(img_id: int, data: AdminGalleryUpdate):
@@ -878,20 +876,19 @@ async def admin_create_testimonio(data: AdminTestimonioCreate):
     try:
         now = datetime.now().isoformat()
         avatar = "".join(p[0].upper() for p in data.nombre.split()[:2] if p)
-        conn = sqlite3.connect(TESTIMONIOS_DB)
-        cur = conn.execute(
-            "INSERT INTO testimonios (nombre,texto,nota,ocasion,avatar,verificado,orden,created_at) VALUES (?,?,?,?,?,?,?,?)",
-            (data.nombre, data.texto, data.nota, data.ocasion, avatar, 1 if data.verificado else 0, data.orden, now)
-        )
-        new_id = cur.lastrowid
-        conn.commit()
-        row = conn.execute("SELECT * FROM testimonios WHERE id=?", (new_id,)).fetchone()
-        conn.close()
+        with sqlite3.connect(TESTIMONIOS_DB) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.execute(
+                "INSERT INTO testimonios (nombre,texto,nota,ocasion,avatar,verificado,orden,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (data.nombre, data.texto, data.nota, data.ocasion, avatar, 1 if data.verificado else 0, data.orden, now)
+            )
+            new_id = cur.lastrowid
+            row = conn.execute("SELECT * FROM testimonios WHERE id=?", (new_id,)).fetchone()
         return {"id": row["id"], "nombre": row["nombre"], "texto": row["texto"], "nota": row["nota"],
                 "ocasion": row["ocasion"], "avatar": row["avatar"], "verificado": bool(row["verificado"])}
     except Exception as e:
-        logger.error(f"Admin: error creando testimonio: {e}")
-        raise HTTPException(status_code=500, detail="Error interno")
+        logger.exception(f"Admin: error creando testimonio: {e}")
+        raise HTTPException(status_code=500, detail=f"Error creando testimonio: {type(e).__name__}: {e}")
 
 @app.put("/api/admin/testimonios/{t_id}", dependencies=[Depends(_require_admin)])
 async def admin_update_testimonio(t_id: int, data: AdminTestimonioUpdate):
